@@ -1,0 +1,272 @@
+---
+title: "GSS Data Processing"
+author: "Kole Norberg"
+date: "10/18/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read in and set up the files
+
+```{r install packages (if necessary),message=FALSE}
+#You only need to run this code chunk once. If you have any packages on this list, you don't need to install again
+#install.packages("readxl")
+#install.packages("foreign")
+#install.packages("tidyverse")
+#install.packages("Hmisc")
+#install.packages("corrplot")
+#install.packages("psych")
+```
+
+```{r load package, message=FALSE}
+library(foreign)
+library(tidyverse)
+library(readxl)
+library(Hmisc)
+library(corrplot)
+library(psych)
+```
+
+```{r functions code from GSS, message=FALSE,echo=FALSE}
+ read.dct <- function(dct, labels.included = "yes") {
+      temp <- readLines(dct)
+      temp <- temp[grepl("_column", temp)]
+      switch(labels.included,
+             yes = {
+                 pattern <- "_column\\(([0-9]+)\\)\\s+([a-z0-9]+)\\s+(.*)\\s+%([0-9]+)[a-z]\\s+(.*)"
+                 classes <- c("numeric", "character", "character", "numeric", "character")
+                 N <- 5
+                 NAMES <- c("StartPos", "Str", "ColName", "ColWidth", "ColLabel")
+             },
+             no = {
+                 pattern <- "_column\\(([0-9]+)\\)\\s+([a-z0-9]+)\\s+(.*)\\s+%([0-9]+).*"
+                 classes <- c("numeric", "character", "character", "numeric")
+                 N <- 4
+                 NAMES <- c("StartPos", "Str", "ColName", "ColWidth")
+             })
+      temp_metadata <- setNames(lapply(1:N, function(x) {
+          out <- gsub(pattern, paste("\\", x, sep = ""), temp)
+          out <- gsub("^\\s+|\\s+$", "", out)
+          out <- gsub('\"', "", out, fixed = TRUE)
+          class(out) <- classes[x] ; out }), NAMES)
+      temp_metadata[["ColName"]] <- make.names(gsub("\\s", "", temp_metadata[["ColName"]]))
+      temp_metadata
+  }
+
+  read.dat <- function(dat, metadata_var, labels.included = "yes") {
+      read.fwf(dat, widths = metadata_var[["ColWidth"]], col.names = metadata_var[["ColName"]])
+  }
+
+```
+
+```{r read in files YOU MUST CHANGE THE FILE PATH, message=FALSE,ech0=FALSE}
+GSS_metadata <- read.dct("GSS Set 2/GSS.dct")
+GSS_ascii <- read.dat("GSS Set 2/GSS.dat", GSS_metadata)
+attr(GSS_ascii, "col.label") <- GSS_metadata[["ColLabel"]]
+GSS <- GSS_ascii
+#End GSS default Code
+#Start new code
+vn <- read_excel("GSS Set 2/GSS.xls", sheet = "Codes") #load in text replacement for numerical codes
+#Any answers in this list will just become NA
+NAList <- c("No answer","Refused","Not applicable","Don't know","Dk na","Dk, na","Dk,na","Dont know")
+
+```
+
+## Start our code to create files with meaningful values
+
+```{r read in variable code info and add this data to GSS file, message=FALSE, echo = FALSE}
+#The variable names are not listed for every row but need to be in order to later merge
+for (i in vn$Code) {
+  vn$`Variable Name` <- ifelse(is.na(vn$`Variable Name`),lag(as.character(vn$`Variable Name`)),as.character(vn$`Variable Name`))
+}
+#Match cases and names with GSS and drop non matching columns
+vn <- vn %>% mutate(name=toupper(`Variable Name`),value=as.numeric(Code)) %>% dplyr::select(-c(`Variable Name`,Code,`Variable Position`))
+#Not all data sets have a unique row ID. Some have multiple entries for one participant
+GSS<- rowid_to_column(GSS)
+#Make GSS longer to match vn for merge
+GSSLonger <- pivot_longer(GSS,c(2:length(GSS)))
+#Merge dfs. Some values didn't have a level in the vn df, recover the value the participant entered. and only keep relevant columns then Return data format to the way it is in GSS
+GSSWide <- merge(GSSLonger,vn,all.x=TRUE) %>% mutate(value2=as.factor(ifelse(is.na(Label),value,as.character(Label)))) %>% dplyr::select(c(rowid,name,value2)) %>% pivot_wider(id_cols=rowid,names_from=name,values_from=value2,values_fill=NULL) %>% droplevels()
+#clean up
+rm(GSSLonger,GSS_ascii,vn,GSS)
+#NOTE THE BELOW IS NECESSARY TO MAKE LATER CODE WORK, but each may be desired fields.
+#Change some answers to NA so it doesn't muck up auto conversion of variables to numeric 
+GSSWide <- GSSWide %>% mutate_all(~ifelse(.%in%NAList,NA,as.character(.)))%>% mutate_all(~ifelse(.%in%c("89 or older"),"89",as.character(.))) %>% mutate_all(~ifelse(.%in%c("Eight or more"),"8",ifelse(.%in%c("All in u.s"),0,as.character(.)))) %>% droplevels()
+#
+#Determine how to best categorize variables
+GSSWide <- as.data.frame(lapply(GSSWide, function(GSSWide) type.convert(as.character(GSSWide), as.is = TRUE)))
+
+#Drop levels that have only a couple of responses, hard for students to deal with (This has to be done after the previous code or there won't be an factors)
+for(i in 2:length(GSSWide)){
+  droplist <- c()
+  for (j in 1:length(levels(GSSWide[,i]))) {
+    if (class(GSSWide[,i])%in% c("factor","character")){
+      #create a list of columns to drop if the number of obs is fewer than 30
+       if (sum(GSSWide[,i]==as.character(levels(GSSWide[,i])[j]),na.rm=TRUE)<30) {
+         droplist <- c(droplist,as.character(levels(GSSWide[,i]))[j])
+       }
+    }
+  }
+  #Now set all responses in those columns to NA and drop 0 levels
+  if (class(GSSWide[,i])%in% c("factor","character")){
+    GSSWide[,i] <- as.factor(ifelse(GSSWide[,i]%in%droplist,NA,as.character(GSSWide[,i])))
+    GSSWide %>% droplevels()
+  }
+}
+#Drop variables that only have one level
+GSSWide <- Filter(function(x) (length(unique(na.omit(x)))>1),GSSWide)
+
+#
+```
+
+```{r subset and find useful combinations of data, message=FALSE}
+#Get list of columns that have more than three levels and are factors. Keep if numeric or if ballot ID though
+drop <- names(Filter(function(x) (length(unique(na.omit(x)))>3),GSSWide) %>% dplyr::select_if(is.factor) %>% dplyr::select(-BALLOT))
+GSSWide2 <- GSSWide %>% dplyr::select(-drop)
+
+#Drop columns with too many NAs
+#GSSWide2 <- GSSWide2 %>% purrr::discard(~sum(is.na(.x))/length(.x)>.5)
+#We need a data frame to update
+iterateStat <- data.frame(term=as.character(),estimate=as.numeric(),std.error=as.numeric(),statistic=as.numeric(),p.value=as.numeric(),dv=as.character(),iv=as.character(),mtype=as.character(),Grouping=as.character())
+#Simple counter to skip the ID_ col. Should probably be coded to check for ID_col position
+x = GSSWide2
+df.model <- data.frame()
+#This allows us to find columns that shouldn't be considered within the models
+colinfo <- c("ID_","BALLOT","rowid")
+for (dv in colnames(x %>% dplyr::select(-colinfo))) { #For each column as a dependent variable excluding identifier columns
+     for (iv in colnames(x %>% dplyr::select(-colinfo))) { #for each column as an independent variable excluding identifier columns
+       cl <-x %>% dplyr::select(dv,iv)  %>%filter_all(all_vars(!(is.na(.))))%>%droplevels()
+       clevels = length(unique(na.omit(cl[,1]))) #We need to know the number of levels for factors for the DV
+      if (dv != iv & nrow(cl)>30) {#make sure the dv and iv are not the same and that they have more than 30 overlapping entries
+       #Set up contrast coding
+        cilevels = length(unique(na.omit(cl[,2])))
+        if (class(cl[,2])%in% c("factor","character")&cilevels>1) { #We're now working with col numbers to simplify things
+             #We need to know the number of levels for factors for the IV
+             cntrst <- contr.treatment(cilevels) #set up a frame work for setting the coding by applying treatment coding of the variable to an object
+             cont <-cntrst-(matrix(rep(1/cilevels, cilevels*(cilevels-1)), ncol=cilevels-1)) #apply sum coding
+             contrasts(cl[,2]) <- cont #set sum coding
+        }
+       #This is not instead of the above, it's a new if structure. Run models based on whether dv is a numeric or binary value.
+        if (class(cl[,1])%in% c("integer","numeric") & clevels>2 &length(levels(cl[,2]))==cilevels) { 
+            
+            formula <- paste(dv,"~",iv) #because we're calling objects, the formula has to be pasted into an object in order to work in the next line
+            model <- lm(formula, data = cl) #run the model
+            df.model <- broom::tidy(model) %>% mutate(V.dv = dv,V.iv = iv,mtype="lm",Grouping="ALL") #put the model into a df
+            iterateStat <- rbind(iterateStat,df.model[2:nrow(df.model),])
+        }
+        else if (clevels==2&length(levels(cl[,2]))==cilevels&cilevels>1) { # now run for binary values. Any non numeric variables that are not binary will be skipped
+            cl[,1] <- as.factor(as.character(cl[,1]))#Within a specific subset of variables, a normally continuous response might drop to two levels.
+            formula <- paste(dv,"~",iv)
+            model <- glm(formula, data = cl,family=binomial)
+            df.model <- broom::tidy(model) %>% mutate(V.dv = dv,V.iv = iv,mtype="glm",Grouping="ALL")
+            iterateStat <- rbind(iterateStat,df.model[2:nrow(df.model),])
+        }
+      }
+     }
+}
+
+#iterateStat <- iterateStat %>% filter(p.value<.05)
+#cleanup
+rm(cl,cntrst,cont,df.model,x,model)
+```
+
+```{r create two dfs}
+real <- GSSWide2
+real$BALLOT <- NULL
+fake <- data.frame(drop = rep(1,nrow(real))) #Create a df of 1s needed for the next line of code
+#Sample ballot 1 at each row to create a new df with scrambled data. descriptive stats will still be the same
+for (c in (1:length(real))) {
+v <- as.data.frame(sample(real[,c],replace=FALSE))
+fake<-cbind(fake,v)
+}
+rm(v)
+#reset the colnames
+colnames(fake) <- c("drop",colnames(real))
+#Make sure that the means are still the same
+all.equal(summary(real[,4]),summary(fake[,5]))
+# Delete every x row and create new ID variable
+#fake <- fake %>% dplyr::select(-drop) %>% slice(which(row_number() %% 2 == 1)) %>% mutate(ID_ = 1:nrow(.))
+#cut off bottom 5% responses
+num <- nrow(fake)-nrow(fake)*.05
+fake <- fake %>% dplyr::select(-drop) %>% filter(ID_<num)
+#Check to make sure fakes is adequate in terms of nas and levels
+#for (x in 1:length(real)) {
+# if (all.equal(levels(fake[,x]),levels(real[,x]))==FALSE) {print("An entire level has been lost due to random chance, rerun code block")}
+# if (sum(is.na(fake[,x]))/nrow(fake)>.7){print("too many NAs in column due to random chance. Run code block again.")}
+#}
+
+#run again for ballots 2 to see if it is different
+#Simple counter to skip the ID_ col. Should probably be coded to check for ID_col position
+x = fake
+df.model <- data.frame()
+
+#This allows us to find columns that shouldn't be considered within the models
+colinfo <- colnames(fake %>% dplyr::select(c("ID_","rowid")))
+for (dv in colnames(x %>% dplyr::select(-colinfo))) { #For each column as a dependent variable excluding identifier columns
+     for (iv in colnames(x %>% dplyr::select(-colinfo))) { #for each column as an independent variable excluding identifier columns
+       cl <-x %>% dplyr::select(dv,iv) %>%filter_all(all_vars(!(is.na(.))))%>%droplevels()
+       clevels = length(unique(na.omit(cl[,1]))) #We need to know the number of levels for factors for the DV
+      if (dv != iv & nrow(cl)>30) {#make sure the dv and iv are not the same and that they have more than 30 overlapping entries
+        cilevels = length(unique(na.omit(cl[,2])))
+        if (class(cl[,2])%in% c("factor","character")&cilevels>1) { #We're now working with col numbers to simplify things
+             #We need to know the number of levels for factors for the IV
+             cntrst <- contr.treatment(cilevels) #set up a frame work for setting the coding by applying treatment coding of the variable to an object
+             cont <-cntrst-(matrix(rep(1/cilevels, cilevels*(cilevels-1)), ncol=cilevels-1)) #apply sum coding
+             contrasts(cl[,2]) <- cont #set sum coding
+        }
+       #This is not instead of the above, it's a new if structure. Run models based on whether dv is a numeric or binary value.
+        if (class(cl[,1])%in% c("integer","numeric") & clevels>2 &length(levels(cl[,2]))==cilevels) { 
+            formula <- paste(dv,"~",iv) #because we're calling objects, the formula has to be pasted into an object in order to work in the next line
+            model <- lm(formula, data = x) #run the model
+            df.model <- broom::tidy(model) %>% mutate(V.dv = dv,V.iv = iv,mtype="lm",Grouping="Shuffle") #put the model into a df
+            iterateStat <- rbind(iterateStat,df.model[2:nrow(df.model),])
+        }
+        else if (clevels==2&length(levels(cl[,2]))==cilevels&cilevels>1) { # now run for binary values. Any non numeric variables that are not binary will be skipped
+           cl[,1] <- as.factor(as.character(cl[,1]))#Within a specific subset of variables, a normally continuous response might drop to two levels.
+            formula <- paste(dv,"~",iv)
+            model <- glm(formula, data = x,family=binomial)
+            df.model <- broom::tidy(model) %>% mutate(V.dv = dv,V.iv = iv,mtype="glm",Grouping="Shuffle")
+            iterateStat <- rbind(iterateStat,df.model[2:nrow(df.model),])
+        }
+      }
+     }
+}
+
+#Check to see if there's more sig results in the shuffled data set
+iterateStat2 <- pivot_wider(iterateStat,id_cols=c("V.iv","term","V.dv"),values_from="p.value",names_from="Grouping",values_fill=NULL)
+
+#Write a new file
+#NEED TO THINK ABOUT WHETHER OR NOT THE REDUCED DATA SET HAS ADEQUATE LEVELS AND Ns
+write.csv(real,"ballots 2/DataSet2.csv",row.names = FALSE)
+write.csv(fake,"ballots 2/DataSet1.csv",row.names = FALSE)
+```
+
+```{r messing around code}
+GSS_meta <- as.data.frame(GSS_metadata) %>% dplyr::select(-ColWidth)
+GSS_meta$ColLabel <- gsub(" r "," participant ",GSS_meta$ColLabel)
+GSS_meta$ColLabel <- gsub(" rs "," participant ",GSS_meta$ColLabel)
+GSS_meta$ColLabel <- gsub("Rs ","participants ",GSS_meta$ColLabel)
+GSS_meta$ColLabel <- gsub("R's ","participants ",GSS_meta$ColLabel)
+GSS_meta$ColLabel <- gsub("R ","participant ",GSS_meta$ColLabel)
+GSS_meta$ColLabel <- gsub("Respondent","Participant",GSS_meta$ColLabel)
+GSS_meta$ColLabel <- gsub("respondent","participant",GSS_meta$ColLabel)
+#Get a list of the colnames and classes
+type <- data.frame(ColName=as.character(),type=as.character(),binary=as.character(),NumberofLevels=as.character(),ResponseRange=as.character())
+for (c in (1:length(real))){
+    list <- data.frame(
+      ColName = colnames(real[c]),
+      type=class(real[,c]),
+      binary=ifelse(length(levels(as.factor(real[,c])))==2,"Yes","No"),
+      NumberOfLevels = length(levels(as.factor(real[,c]))),
+      ResponseRange = as.character(ifelse(class(real[,c])=="factor",toString(levels(real[,c])),gsub(", "," to ",toString(range(real[,c],na.rm=TRUE))))))
+
+    type <- rbind(type,list)
+}
+GSS_meta <- merge(GSS_meta,type) %>% dplyr::select(-Str,-StartPos)
+colnames(GSS_meta) <- c("Name","Description","Type","Binary","NumberOfLevels","ResponseRange")
+
+write.csv(GSS_meta, "Ballots 2/DataDescription2.csv")
+```

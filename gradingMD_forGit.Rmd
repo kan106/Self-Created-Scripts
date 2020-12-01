@@ -1,0 +1,296 @@
+---
+title: "GradeTracking"
+author: "Kole Norberg"
+date: "12/1/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r library, echo = FALSE, message = FALSE}
+#Load in files
+library(ggplot2)
+library(dplyr)
+library(chron)
+library(lubridate)
+library(data.table)
+library(tidyverse)
+library(stringr)
+#Read in my function
+findcolumns <- function(TypeofWork,df){
+  unlist(sapply(TypeofWork, grep, x = colnames(df), value = TRUE))
+}
+```
+
+```{r user_variables}
+#what name did you give the grading roster csv?
+gradingRoster <- "gradingRoster"
+#What is the name of the csv file with students who are allowed to submit work late?
+#This file should have a column with the students "First" name and "Last" name labeled as in quotes.
+Accommodations <- "Accommodations"
+#The long form of the section 
+SectionTTH <- c("2211 PSY 0036 SEC1010 RESEARCH METHODS LECTURE","2211 PSY 0036 SEC1060 RESEARCH METHODS LECTURE")
+SectionMW <- c("2211 PSY 0036 SEC1020 RESEARCH METHODS LECTURE","2211 PSY 0036 SEC1080 RESEARCH METHODS LECTURE")
+#Look to the next line and copy and past the value in quotes into 
+LookForLateWorkAfterThisDate <- "2020-11-17 10:30"
+#What is today's date and time? "2020-12-01 10:30"
+#Make sure you change the above value so you're not rechecking work you've already checked.
+
+#Write in the number values for the Lectures. The file should be saved as "Lecture 24.2" with the last part being the number you gave it and the first part being constant. 
+LecturesNum <- c(2:6,8:9,"9.1","11.1","11.2",12,15,"16.1","16.2",17,19,22)
+#Now past the due dates in in the same order as the lecture numbers. Makes if there are two lectures for one date taht you paste that due date in twice. You can just add one date at the end of the column each time you come process grades. The date format is "ymd HM"
+
+LecturesDueTH <- c("2020-08-30 23:59","2020-08-30 23:59","2020-09-01 06:00","2020-09-03 06:00","2020-09-08 06:00","2020-09-15 06:00","2020-09-18 06:00","2020-09-18 06:00","2020-09-22 06:00","2020-09-24 06:00","2020-09-24 06:00","2020-09-29 06:00","2020-10-08 23:59","2020-10-13 06:30","2020-10-13 06:30","2020-10-20 06:30","2020-10-22 06:30")
+LecturesDueMW <- c("2020-08-30 23:59","2020-08-30 23:59","2020-08-31 12:00","2020-09-02 12:00","2020-09-07 12:00","2020-09-14 12:00","2020-09-17 12:00","2020-09-17 12:00","2020-09-21 12:00","2020-09-23 12:00","2020-09-23 12:00","2020-09-28 12:00","2020-10-07 14:00","2020-10-12 12:30","2020-10-12 12:30","2020-10-19 12:30","2020-10-21 12:30")
+#If all.equal is not true below then you have forgotten to add a due date or assignment. Go back and revise
+all.equal(length(LecturesNum),length(LecturesDueMW))
+all.equal(length(LecturesNum),length(LecturesDueTH))
+
+#Group Work - Set the GW Number (e.g., for GW22, write 22 in quotes)
+GW <- "26"
+#Read in the GW data
+gw <- read.csv(paste0(paste0("GW",GW),".csv"))
+colnames(gw)
+```
+``` {r UserVariables Continued}
+#Set the colnames based on the print out above (it's the set with the _1, etc following it)
+GWCols <- c("Q16_1","Q16_2","Q16_3","Q16_4","Q16_5")
+
+#Homework and Statswork
+#List of HW assignments, update as you add assignments
+HList <- c("3.1","3.2","7","8","9","10","10S","11","12","12S","13","15","16","18","20S","23","26S","26")
+#Some students don't click submit. Completing 88% basically means they  did it all but didn't hit submit.
+Per <- 88
+#As before, make sure HList is equal the due date list and duplicate due dates for days when stats work is also due.
+HWDueTH <- c("2020-08-30 23:59","2020-08-30 23:59","2020-09-01 06:00","2020-09-03 06:00","2020-09-08 06:00","2020-09-15 06:00","2020-09-18 06:00","2020-09-18 06:00","2020-09-22 06:00","2020-09-24 06:00","2020-09-24 06:00","2020-09-29 06:00","2020-10-08 23:59","2020-10-13 06:30","2020-10-13 06:30","2020-10-20 06:30","2020-10-22 06:30","2020-10-22 06:30")
+HWDueMW <- c("2020-08-30 23:59","2020-08-30 23:59","2020-08-31 12:00","2020-09-02 12:00","2020-09-07 12:00","2020-09-14 12:00","2020-09-17 12:00","2020-09-17 12:00","2020-09-21 12:00","2020-09-23 12:00","2020-09-23 12:00","2020-09-28 12:00","2020-10-07 14:00","2020-10-12 12:30","2020-10-12 12:30","2020-10-19 12:30","2020-10-21 12:30","2020-10-22 06:30")
+all.equal(length(HList),length(HWDueMW))
+all.equal(length(HList),length(HWDueTH))
+```
+
+```{r read in}
+#Create data frame for Lecture loop
+Lectures <- data.frame(LecturesNum=LecturesNum,LecturesDueTH=LecturesDueTH,LecturesDueMW=LecturesDueMW)
+HW <- data.frame(HList=HList,HWDueTH=HWDueTH,HWDueMW=HWDueMW)
+#Read in the most recent roster
+R <- read.csv(paste0(gradingRoster,".csv"))
+#Exclude the test student. It can have a variety of names
+R <- R[!(R$Student%in%c("STUDENT, TEST","Test Student","Student, Test")),]
+
+
+########################USER VARIABLE SECTION#############################
+#Switch students sections to fit the correct due dates when applicable
+R$Section <- ifelse(R$Student%in%c("Sydney Ruhl","Ruhl, Sydney","Lawrence Brothers","Brothers, Lawrence"),"2211 PSY 0036 SEC1010 RESEARCH METHODS LECTURE",as.character(R$Section))
+##########################################################################
+
+#Create new dfs that are used for later merging and matching
+E <- R[R$SIS.Login.ID!="",which(names(R)%in%c("SIS.Login.ID","Student","Section"))]
+Master <- R[R$SIS.Login.ID!="",which(names(R)%in%c("SIS.Login.ID","Student"))]
+MasterHW <- R[R$SIS.Login.ID!="",which(names(R)%in%c("SIS.Login.ID","Student"))]
+#make sections easier to track
+E$S <- ifelse(E$Section%in%SectionTTH,"TTH","MW")
+#Get rid of this variable that we no longer need
+E$Section <- NULL
+#Read in spread sheet of students with accommodations
+A <- read.csv(paste0(Accommodations,".csv"))
+A$Student <- paste0(A$Last,", ",A$First)
+A <- merge(A,R[,c("Student","SIS.Login.ID")],all.x=TRUE)
+#Only look for work after this date
+NewWork <- parse_date_time(LookForLateWorkAfterThisDate,orders="ymd HM")
+```
+
+```{r grade lectures}
+counter = 0
+#create a late df
+LateCol <- data.frame(LateCol=as.character())
+for (i in Lectures$LecturesNum) {
+  counter = counter+1
+
+  l <- read.csv(paste0("Lecture",i,".csv"))
+  #create a late df
+  LateCol <- rbind(LateCol,paste0("LateL",i))
+
+  #set up wide form data
+  if (!("Question.ID"%in%colnames(l))) {
+    l <- l %>% dplyr::select(User.Email,starts_with("Quiz.Start.Time")) 
+    l <- pivot_longer(l,starts_with("Quiz.Start.Time"))
+    colnames(l) <- c("User.Email","Question.ID","Quiz.Start.Time")
+  }
+  #deal with long form data
+  l <- l %>% select(User.Email,Quiz.Start.Time,Question.ID)
+  l$SIS.Login.ID <- gsub("@pitt.edu","",l$User.Email)
+  l <- l %>% mutate(SIS.Login.ID = toupper(SIS.Login.ID)) %>% filter(SIS.Login.ID%in%R$SIS.Login.ID)
+  l <- merge(l,E,all=TRUE)
+  l$SubmissionDate <- parse_date_time(l$Quiz.Start.Time,orders="mdy HM")
+  l$Quiz.Start.Time <- NULL
+  l <- pivot_wider(l,names_from = Question.ID, values_from = SubmissionDate)
+  l$`NA` <- NULL
+
+  #Setting due dates for the assignments
+
+  DueT <- parse_date_time(Lectures$LecturesDueTH[[counter]],orders="ymd HM")
+  DueM <- parse_date_time(Lectures$LecturesDueMW[[counter]],orders="ymd HM")
+  #We want to give our students with appropriate accommodations an extra 48 hours and set everyone else at the due date
+  OnTimeT <- l %>% filter_at(vars(5:ncol(l)), (all_vars(. <= DueT))) 
+  OnTimeT2 <- l %>% filter(SIS.Login.ID%in%A$SIS.Login.ID)%>%filter_at(vars(5:ncol(l)),all_vars(.<=DueT+hours(48)))
+  OnTimeT <- rbind(OnTimeT2,OnTimeT)
+  OnTimeT <- OnTimeT[OnTimeT$S=="TTH",]
+
+  OnTimeM <- l %>% filter_at(vars(5:ncol(l)), (all_vars(. <= DueM)))
+  OnTimeM2 <- l %>% filter(SIS.Login.ID%in%A$SIS.Login.ID)%>%filter_at(vars(5:ncol(l)),all_vars(.<=DueM+hours(48)))
+  OnTimeM <- rbind(OnTimeM2,OnTimeM)
+  OnTimeM <- OnTimeM[OnTimeM$S=="MW",]
+  l$OnTimeL <- ifelse(l$SIS.Login.ID%in%OnTimeT$SIS.Login.ID|l$SIS.Login.ID%in%OnTimeM$SIS.Login.ID,1,0)
+
+  #Find that new late work
+  LateT <- l %>% filter_at(vars(5:ncol(l)), any_vars(. > DueT & . > NewWork),all_vars(!(is.na(.))))
+  LateT <- LateT[LateT$S=="TTH",]
+  LateM <- l %>% filter_at(vars(5:ncol(l)), any_vars(. > DueM & . > NewWork),all_vars(!(is.na(.))))
+  LateM <- LateM[LateM$S=="MW",]
+  l$LateL <- ifelse(l$SIS.Login.ID%in%LateT$SIS.Login.ID|l$SIS.Login.ID%in%LateM$SIS.Login.ID,1,0)
+  #Fix students who are ontime due to accommodations but might have shown up as late
+  l$LateL <- ifelse(l$OnTimeL==1,0,as.character(l$LateL))
+  #
+  l <- l[l$SIS.Login.ID!="",]
+  names(l)[names(l)=="OnTimeL"] <- paste0("OnTimeL",i)
+  names(l)[names(l)=="LateL"] <- paste0("LateL",i)
+  n <- ncol(l)-2
+  columns <- names(l[,n:ncol(l)])
+  Master <- merge(Master,l[,c("SIS.Login.ID",columns)],by="SIS.Login.ID")
+}
+R <- merge(R,Master)
+names(LateCol) <- "LateCol"
+CheckLateL <- Master %>% filter_at(all_of(LateCol$LateCol), any_vars(. == 1)) %>% dplyr::select(all_of(LateCol$LateCol),Student)
+rm(LateCol)
+#Make sure any marks in the gradebook are not overwritten and that students with accommodations get credit for late work
+LectureColumns <- as.data.frame(findcolumns("..Lecture",R))
+OnTimeColumns <- as.data.frame(findcolumns("OnTime",R))
+LectureColumns <-  cbind(LectureColumns,OnTimeColumns)
+names(LectureColumns) <- c("LecturesCol","OnTimeCol")
+for (j in length(LectureColumns)){
+  R[,which(names(R)%in%LectureColumns$LectureCol[[j]])] <- ifelse(R[,which(names(R)%in%LectureColumns$OnTimeCol[[j]])]==1|R[,which(names(R)%in%LectureColumns$LectureCol[[j]])]==1,1,0)
+}
+write.csv(R,"gradedLectures.csv")
+rm(i)
+rm(j)
+rm(n)
+rm(counter)
+rm(DueM)
+rm(DueT)
+rm(LectureColumns)
+rm(LecturesDueMW)
+rm(LecturesDueTH)
+rm(LecturesNum)
+rm(Master)
+rm(OnTimeColumns)
+rm(OnTimeM)
+rm(OnTimeT)
+rm(OnTimeT2)
+rm(OnTimeM2)
+rm(Lectures)
+rm(l)
+rm(LateM)
+rm(LateT)
+```
+
+```{r group work}
+#Change columns based on the data
+gw <- gw %>% dplyr::select(GWCols,userName)
+#gw <- gw[gw$Finished==TRUE,]
+gw$Finished <- NULL
+E$Email <- paste0(E$SIS.Login.ID,"@PITT.EDU")
+gw <- mutate_all(gw, list(toupper))
+gw <- mutate_all(gw, trimws)
+E <- mutate_all(E, list(toupper))
+#Change columns based on the data
+gw <- pivot_longer(gw,c(Q16_1,Q16_2,Q16_3,Q16_4,Q16_5,userName))
+E$GW <- ifelse(E$SIS.Login.ID%in%gw$value|
+                 E$Email%in%gw$value,1,0)
+#Get a list of scores for the GW
+write.csv(E,"groupwork.csv")
+rm(gw)
+rm(GWCols)
+rm(GW)
+```
+
+```{r homework}
+LateCol <- data.frame(LateCol=as.character())
+counter = 0
+for (i in HList) {
+  counter = counter+1
+  H <- read.csv(paste(i,"HW.csv"))
+  LateCol <- rbind(LateCol,paste0("LateH",i))
+  H$userName <- gsub("@pitt.edu","",H$userName)
+  H$SIS.Login.ID <- H$userName
+  H <- H %>% 
+      mutate(userName = toupper(userName))
+  H <- H %>% filter(Finished%in%c("TRUE","FALSE")&as.numeric(as.character(Progress))>=Per&SIS.Login.ID%in%R$SIS.Login.ID) %>% dplyr::select(EndDate,SIS.Login.ID)
+  H <- merge(H,E,all=TRUE)
+  H$SD <- parse_date_time(H$EndDate,orders="mdy HM")
+  H$EndDate <- NULL
+  
+  DueT <- parse_date_time(HW$HWDueTH[[counter]],orders="ymd HM")
+  DueM <- parse_date_time(HW$HWDueMW[[counter]],orders="ymd HM")
+  
+  OnTime <- H %>% filter((((H$SD<=DueT|(H$SIS.Login.ID%in%A$UserID&H$SD<=DueT+hours(48) ))&H$S=="TTH")|(H$SD<=DueM&H$S=="MW"|(H$SIS.Login.ID%in%A$SIS.Login.ID&H$SD<=DueM+hours(48))))&!(is.na(SD)))
+  H$OnTimeH <- ifelse(H$SIS.Login.ID%in%OnTime$SIS.Login.ID,1,0)
+
+  Late <- H %>% filter(((H$SD>DueT&H$S=="TTH"&H$SD>=NewWork&H$SD>=DueT)|(H$SD>DueM&H$S=="MW"&H$SD>=NewWork&H$SD>=DueM))&!(is.na(H$SD)))
+  H$LateH <- ifelse(H$SIS.Login.ID%in%Late$SIS.Login.ID,1,0)
+  #Corrects for students with accommodations
+  H$LateH <- as.numeric(ifelse(H$OnTimeH==1,0,as.character(H$LateH)))
+
+  names(H)[names(H)=="OnTimeH"] <- paste0("OnTimeH",i)
+  names(H)[names(H)=="LateH"] <- paste0("LateH",i)
+
+  n <- ncol(H)-1
+  columns <- names(H[,n:ncol(H)])
+
+  MasterHW <- merge(MasterHW,H[,c("SIS.Login.ID",columns)],by="SIS.Login.ID",all.x=TRUE)
+}
+R <- merge(R,MasterHW)
+#drop students who get duplicated 
+R <- unique(R)
+names(LateCol) <- "LateCol"
+CheckLateHW <- MasterHW %>% filter_at(all_of(LateCol$LateCol), any_vars(. == 1)) %>% dplyr::select(all_of(LateCol$LateCol),Student)
+rm(LateCol)
+#Make sure any marks in the gradebook are not overwritten and that students with accommodations get credit for late work
+HWColumns <- as.data.frame(findcolumns("HW",R))
+OnTimeColumns <- as.data.frame(findcolumns("OnTime",R)) %>% filter(grepl("H",OnTime))
+HWColumns <-  cbind(HWColumns,OnTimeColumns)
+names(HWColumns) <- c("HWCol","OnTimeCol")
+for (j in length(HWColumns)){
+  R[,which(names(R)%in%HWColumns$LectureCol[[j]])] <- ifelse(R[,which(names(R)%in%HWColumns$OnTimeCol[[j]])]==1|R[,which(names(R)%in%HWColumns$LectureCol[[j]])]==1,1,0)
+}
+rm(HList)
+rm(HWDueMW)
+rm(HWDueTH)
+rm(i)
+rm(j)
+rm(n)
+rm(Per)
+rm(SectionMW)
+rm(SectionTTH)
+rm(NewWork)
+rm(gradingRoster)
+rm(DueT)
+rm(DueM)
+rm(counter)
+rm(columns)
+rm(Accommodations)
+rm(MasterHW)
+rm(HW)
+rm(H)
+rm(E)
+rm(Late)
+rm(OnTime)
+rm(OnTimeColumns)
+rm(R)
+rm(A)
+rm(HWColumns)
+rm(LookForLateWorkAfterThisDate)
+```
